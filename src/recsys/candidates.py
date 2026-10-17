@@ -229,6 +229,15 @@ def pool_metrics(pool: CandidatePool, eval_set: EvalSet) -> pd.DataFrame:
     single = hit & (n_sources == 1)
 
     def summary(mask: np.ndarray, unique: np.ndarray) -> dict[str, float]:
+        """Считает строку таблицы для подмножества пар пула.
+
+        Args:
+            mask: Пары пула, относящиеся к источнику (или все пары пула).
+            unique: Релевантные пары, найденные только одним источником.
+
+        Returns:
+            Значения `candidates`, `recall` и `unique_share` для подмножества.
+        """
         found = np.bincount(rows[mask & hit], minlength=n_users)
         return {
             "candidates": mask.sum() / n_users,

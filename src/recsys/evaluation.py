@@ -191,6 +191,14 @@ def compare_recommendations(
     """
 
     def model_metrics(recs: np.ndarray | dict[int, np.ndarray]) -> pd.DataFrame:
+        """Считает метрики одной модели для всех K.
+
+        Args:
+            recs: Один список, усекаемый до каждого K, или отдельные списки по K.
+
+        Returns:
+            DataFrame с индексом K и колонками метрик.
+        """
         if isinstance(recs, dict):
             return pd.concat([ranking_metrics(recs[k], eval_set, (k,)) for k in ks])
         return ranking_metrics(recs, eval_set, ks)
