@@ -76,6 +76,32 @@ USER_NEW_MAX_RATINGS: int = 10
 BOOK_BAYES_M: int = 50
 CATEGORY_AFFINITY_ALPHA: float = 10.0
 
+# Генерация кандидатов: источники пула и число кандидатов от каждого источника.
+CANDIDATE_SOURCES: tuple[str, ...] = ("popularity", "content", "item_cf", "pure_svd")
+CANDIDATES_PER_SOURCE: int = 50
+
+# Компоненты взвешенного гибрида и стартовые веса по типам пользователей
+# (уточняются подбором на valid). У новых пользователей больше вес Popularity.
+HYBRID_COMPONENTS: tuple[str, ...] = (
+    "popularity", "content", "item_cf", "pure_svd", "funk_svd", "affinity",
+)  # fmt: skip
+HYBRID_WEIGHTS: dict[str, dict[str, float]] = {
+    "active": {
+        "popularity": 0.05, "content": 0.15, "item_cf": 0.4,
+        "pure_svd": 0.2, "funk_svd": 0.1, "affinity": 0.1,
+    },
+    "new": {
+        "popularity": 0.4, "content": 0.2, "item_cf": 0.15,
+        "pure_svd": 0.05, "funk_svd": 0.05, "affinity": 0.15,
+    },
+}  # fmt: skip
+
+# Балансировка top-K: head — доля самых популярных книг каталога по числу оценок
+# в train; квоты — не более q книг одной категории и не менее t книг вне head.
+BALANCE_HEAD_SHARE: float = 0.1
+BALANCE_MAX_PER_CATEGORY: int = 3
+BALANCE_MIN_TAIL: int = 3
+
 # Тематические категории книг: шаблоны ключевых слов по очищенным тегам. Тег
 # относится ко всем категориям, шаблоны которых он содержит; категория книги —
 # с наибольшей суммой счётчиков таких тегов, при отсутствии совпадений — other.

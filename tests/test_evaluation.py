@@ -70,3 +70,14 @@ def test_exposure_shares() -> None:
     assert table.loc["m", "head"] == pytest.approx(3 / 5)
     assert table.loc["m", "mid"] == 0.0
     assert table.loc["m", "tail"] == pytest.approx(2 / 5)
+
+
+def test_diversity_metrics() -> None:
+    categories = np.array([0, 0, 1, 2])
+    is_head = np.array([True, False, False, True])
+    table = evaluation.diversity_metrics(
+        {"m": np.array([[1, 2, 3], [4, -1, -1]])}, categories, is_head, k=3
+    )
+    assert table.loc["m", "n_categories"] == pytest.approx(1.5)
+    assert table.loc["m", "ild"] == pytest.approx((2 / 3 + 0.0) / 2)
+    assert table.loc["m", "tail_share"] == pytest.approx((2 / 3 + 0.0) / 2)

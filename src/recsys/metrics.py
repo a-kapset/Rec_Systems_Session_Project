@@ -178,6 +178,78 @@ def mean_popularity_at_k(
     return values.sum(axis=1) / np.maximum(valid.sum(axis=1), 1)
 
 
+def _top_labels(recommendations: np.ndarray, labels: np.ndarray, k: int) -> np.ndarray:
+    """Заменяет индексы объектов top-K их метками; пустые позиции — -1.
+
+    Args:
+        recommendations: Индексы объектов (n_users, ≥ K), -1 — пустая позиция.
+        labels: Неотрицательная целочисленная метка каждого объекта (например, код категории).
+        k: Длина списка.
+
+    Returns:
+        Матрица меток формы (n_users, K).
+    """
+    top = recommendations[:, :k]
+    return np.where(top >= 0, labels[np.where(top >= 0, top, 0)], -1)
+
+
+def category_count_at_k(recommendations: np.ndarray, categories: np.ndarray, k: int) -> np.ndarray:
+    """Считает число различных категорий в top-K.
+
+    Args:
+        recommendations: Индексы объектов (n_users, ≥ K), -1 — пустая позиция.
+        categories: Код категории каждого объекта (≥ 0).
+        k: Длина списка.
+
+    Returns:
+        Значения по пользователям.
+    """
+    codes = np.sort(_top_labels(recommendations, categories, k), axis=1)
+    first = np.ones_like(codes, dtype=bool)
+    first[:, 1:] = codes[:, 1:] != codes[:, :-1]
+    return (first & (codes >= 0)).sum(axis=1)
+
+
+def intra_list_diversity_at_k(
+    recommendations: np.ndarray, categories: np.ndarray, k: int
+) -> np.ndarray:
+    """Считает intra-list diversity по категориям: 1 − доля пар top-K из одной категории.
+
+    Учитываются пары заполненных позиций; при менее чем двух объектах — 0.
+
+    Args:
+        recommendations: Индексы объектов (n_users, ≥ K), -1 — пустая позиция.
+        categories: Код категории каждого объекта (≥ 0).
+        k: Длина списка.
+
+    Returns:
+        Значения в [0, 1] по пользователям.
+    """
+    codes = _top_labels(recommendations, categories, k)
+    valid = codes >= 0
+    upper = np.triu(np.ones((codes.shape[1], codes.shape[1]), dtype=bool), k=1)
+    pairs = valid[:, :, None] & valid[:, None, :] & upper
+    same = (codes[:, :, None] == codes[:, None, :]) & pairs
+    n_pairs = pairs.sum(axis=(1, 2))
+    return np.where(n_pairs > 0, 1.0 - same.sum(axis=(1, 2)) / np.maximum(n_pairs, 1), 0.0)
+
+
+def share_at_k(recommendations: np.ndarray, mask: np.ndarray, k: int) -> np.ndarray:
+    """Считает долю заполненных позиций top-K, занятых объектами с `mask = True`.
+
+    Args:
+        recommendations: Индексы объектов (n_users, ≥ K), -1 — пустая позиция.
+        mask: Булев признак каждого объекта (например, книга вне head).
+        k: Длина списка.
+
+    Returns:
+        Значения по пользователям (пустые позиции не учитываются).
+    """
+    flags = _top_labels(recommendations, mask.astype(np.int64), k)
+    valid = flags >= 0
+    return (flags == 1).sum(axis=1) / np.maximum(valid.sum(axis=1), 1)
+
+
 def rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """Считает RMSE предсказанных оценок.
 

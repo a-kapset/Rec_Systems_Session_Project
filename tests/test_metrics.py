@@ -109,3 +109,16 @@ def test_rmse_mae() -> None:
     y_true, y_pred = np.array([4, 2, 5]), np.array([3, 2, 3])
     assert metrics.rmse(y_true, y_pred) == pytest.approx(np.sqrt(5 / 3))
     assert metrics.mae(y_true, y_pred) == pytest.approx(1.0)
+
+
+def test_category_diversity_and_share() -> None:
+    recs = np.array([[0, 1, 2, -1], [2, 2, -1, -1]])
+    categories = np.array([0, 0, 1])
+    np.testing.assert_array_equal(metrics.category_count_at_k(recs, categories, 4), [2, 1])
+    # Пары заполненных позиций: (0, 1) — одна категория, (0, 2), (1, 2) — разные.
+    np.testing.assert_allclose(metrics.intra_list_diversity_at_k(recs, categories, 4), [2 / 3, 0.0])
+    np.testing.assert_allclose(
+        metrics.intra_list_diversity_at_k(recs[:, :1], categories, 1), [0.0, 0.0]
+    )
+    mask = np.array([True, False, True])
+    np.testing.assert_allclose(metrics.share_at_k(recs, mask, 4), [2 / 3, 1.0])

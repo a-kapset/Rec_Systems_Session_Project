@@ -319,3 +319,33 @@ def exposure(
         counts = pd.Series(segment).value_counts(normalize=True)
         rows[name] = counts.reindex(item_segments.cat.categories, fill_value=0.0)
     return pd.DataFrame(rows).T.rename_axis("model")
+
+
+def diversity_metrics(
+    recommendations: dict[str, np.ndarray],
+    categories: np.ndarray,
+    is_head: np.ndarray,
+    k: int = 10,
+) -> pd.DataFrame:
+    """Считает метрики разнообразия top-K по категориям и популярности.
+
+    Args:
+        recommendations: Списки `book_id` по имени модели.
+        categories: Код категории каждой книги формы (N_BOOKS,).
+        is_head: Принадлежность книги head популярности формы (N_BOOKS,).
+        k: Длина списка.
+
+    Returns:
+        DataFrame по моделям: `n_categories` — среднее число различных
+        категорий, `ild` — intra-list diversity по категориям, `tail_share` —
+        доля позиций, занятых книгами вне head.
+    """
+    rows = {}
+    for name, recs in recommendations.items():
+        items = np.where(recs > 0, recs - 1, -1)
+        rows[name] = {
+            "n_categories": metrics.category_count_at_k(items, categories, k).mean(),
+            "ild": metrics.intra_list_diversity_at_k(items, categories, k).mean(),
+            "tail_share": metrics.share_at_k(items, ~is_head, k).mean(),
+        }
+    return pd.DataFrame.from_dict(rows, orient="index").rename_axis("model")
