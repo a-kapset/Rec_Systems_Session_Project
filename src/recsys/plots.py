@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
-from matplotlib.ticker import PercentFormatter
+from matplotlib.ticker import MultipleLocator, PercentFormatter
 
 from recsys import config
 
@@ -92,6 +92,41 @@ METRIC_LABELS: dict[str, str] = {
     "hit_rate": "HitRate",
     "coverage": "Coverage",
 }
+
+
+def plot_category_shares(table: pd.DataFrame) -> Figure:
+    """Строит доли тематических категорий в каталоге и в оценках.
+
+    Args:
+        table: Индекс — категории в порядке отображения сверху вниз, колонки
+            `books` (доля книг каталога) и `ratings` (доля оценок обучающей выборки).
+
+    Returns:
+        График.
+    """
+    data = table[::-1]
+    y = np.arange(len(data))
+    height = 0.4
+    fig, ax = plt.subplots(figsize=(8, 0.34 * len(data) + 1.4))
+    ax.barh(
+        y + height / 2, data["books"], height * 0.9, color=SERIES[0], label="Доля книг каталога"
+    )
+    ax.barh(
+        y - height / 2,
+        data["ratings"],
+        height * 0.9,
+        color=SERIES[1],
+        label="Доля оценок обучающей выборки",
+    )
+    ax.set_yticks(y, [name.replace("_", " ") for name in data.index])
+    ax.xaxis.set_major_locator(MultipleLocator(0.05))
+    ax.xaxis.set_major_formatter(PercentFormatter(1.0, decimals=0))
+    ax.grid(axis="y", visible=False)
+    ax.set_xlabel("Доля")
+    ax.set_title("Тематические категории книг")
+    ax.legend(loc="lower right")
+    fig.tight_layout()
+    return fig
 
 
 def plot_model_comparison(

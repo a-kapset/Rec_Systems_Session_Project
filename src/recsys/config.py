@@ -69,6 +69,73 @@ USER_ACTIVITY_LABELS: tuple[str, ...] = ("<50", "50–99", "100–149", "≥150"
 HEAD_RATING_SHARE: float = 0.5
 TAIL_RATING_SHARE: float = 0.8
 
+# Признаки. Тип пользователя «новый» — не более USER_NEW_MAX_RATINGS оценок в train;
+# сила сглаживания средней оценки книги к глобальному среднему (Bayesian average);
+# сила сглаживания affinity пользователя к категории к доле категории в train.
+USER_NEW_MAX_RATINGS: int = 10
+BOOK_BAYES_M: int = 50
+CATEGORY_AFFINITY_ALPHA: float = 10.0
+
+# Тематические категории книг: шаблоны ключевых слов по очищенным тегам. Тег
+# относится ко всем категориям, шаблоны которых он содержит; категория книги —
+# с наибольшей суммой счётчиков таких тегов, при отсутствии совпадений — other.
+CATEGORY_OTHER: str = "other"
+BOOK_CATEGORIES: dict[str, str] = {
+    "fantasy": (
+        r"fantasy|magic|dragons?$|^fae$|faer(?:y|ies)|fairies|witch|wizard|vampire|vamps"
+        r"|werewol|shifters?$|shapeshift|paranormal|supernatural|^angels?$|demons?$"
+        r"|mytholog|fairy-tales?|harry-potter|discworld|pratchett"
+    ),
+    "science_fiction": (
+        r"sci-?fi|science-fiction|^sff?$|^sf-|dystop|apocalyp|^space|space-opera|aliens?$"
+        r"|time-travel|steampunk|cyberpunk|futuristic|star-wars|star-trek|speculative"
+    ),
+    "mystery_thriller": (
+        r"myster|thriller|crime|detective|suspense|murder|espionage|^spy|spies|noir"
+        r"|agatha-christie|james-patterson|grisham"
+    ),
+    "romance": (
+        r"romance|romantic|chick-?lit|chic-lit|^love$|love-stor|erotic|bdsm|alpha-male"
+        r"|new-adult|book-boyfriend|nicholas-sparks|nora-roberts|kristen-ashley|steamy|smut"
+    ),
+    "young_adult": r"young-adult|^ya(?:-|$)|teen|high-school",
+    "children": (
+        r"(?<!lee-)child|kids|juvenile|picture-books?|middle-grade|chapter-books|newbery"
+        r"|caldecott|seuss|roald-dahl|bedtime"
+    ),
+    "classics": (
+        r"classic|clàssics|1001|rory-gilmore|shakespeare|victorian|19th-century|pulitzer"
+        r"|banned-books|russian-lit|english-lit|british-lit|american-lit"
+    ),
+    "literary_fiction": (
+        r"^contemporary$|contemporary-fiction|literary|^literature$|realistic-fiction"
+        r"|general-fiction|women-s-fiction|womens-fiction|book-group|modern-fiction"
+    ),
+    "historical_fiction": (
+        r"historical|^ww|world-war|holocaust|tudors?$|medieval|regency|civil-war|^war$"
+    ),
+    "horror": r"horror|ghosts?$|zombies?$|stephen-king|^king$|koontz|gothic|scary|creepy|haunted",
+    "non_fiction": (
+        r"non-fiction|(?<!alternate-)history|science(?!-fiction)|psycholog|politic|economics"
+        r"|sociology|(?<!time-)travel|essays|true-crime|^food|cooking|cookbooks?|health"
+        r"|journalism|reference|nature|math|physics|biology|neuroscience|medicine"
+        r"|education|feminism|environment|technology|parenting|^art$|music"
+    ),
+    "biography_memoir": r"biograph|memoir",
+    "self_help_business": (
+        r"self-help|self-improvement|personal-development|business|leadership|productivity"
+        r"|management|finance|money|entrepreneur|marketing|motivation|career|investing"
+    ),
+    "poetry_drama": r"poetry|poems?$|^plays?$|theatre|theater",
+    "comics": (
+        r"comic|cómic|graphic-novel|manga|mangá|^graphic$|marvel|dc-comics|superhero|batman"
+    ),
+    "religion_philosophy": (
+        r"religio|christian|theology|spiritual|philosoph|faith|bible|buddhis|islam|jewish"
+        r"|judaism|(?:^|-)god(?:-|$)|church|inspirational"
+    ),
+}
+
 # Служебные теги (статус чтения, владение, формат, личные оценки и списки).
 STOP_TAGS: frozenset[str] = frozenset(
     {

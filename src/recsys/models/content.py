@@ -121,6 +121,25 @@ class ContentBased(Recommender):
         profiles = self._user_weights[np.asarray(user_ids) - 1] @ self.item_vectors
         return (profiles @ self.item_vectors.T).toarray()
 
+    def cosine(self, user_ids: np.ndarray) -> np.ndarray:
+        """Считает cosine similarity книг и TF-IDF профилей пользователей.
+
+        Отличается от `score` нормировкой на длину профиля: значения лежат в
+        [0, 1] и сравнимы между пользователями; порядок книг тот же.
+
+        Args:
+            user_ids: Идентификаторы пользователей.
+
+        Returns:
+            Матрица (len(user_ids), N_BOOKS); 0 — для пользователя без книг
+            с оценкой не ниже порога.
+        """
+        profiles = self._user_weights[np.asarray(user_ids) - 1] @ self.item_vectors
+        norms = np.sqrt(np.asarray(profiles.multiply(profiles).sum(axis=1)).ravel())
+        inv_norms = np.divide(1.0, norms, out=np.zeros_like(norms), where=norms > 0)
+        scores = (profiles @ self.item_vectors.T).toarray()
+        return (scores * inv_norms[:, None]).astype(np.float32)
+
     def get_similar_books(self, book_id: int, n: int = 5) -> pd.DataFrame:
         """Находит N книг, наиболее близких к заданной по cosine similarity.
 
