@@ -1,0 +1,23 @@
+# Окружение
+.venv/
+venv/
+
+# Данные и артефакты
+data/
+artifacts/
+
+# Кэши Python и инструментов
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# IDE и ОС
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
