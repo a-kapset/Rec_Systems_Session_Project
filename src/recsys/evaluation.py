@@ -173,7 +173,7 @@ def recommend_all(
 
 
 def compare_recommendations(
-    recommendations: dict[str, np.ndarray],
+    recommendations: dict[str, np.ndarray | dict[int, np.ndarray]],
     eval_set: EvalSet,
     ks: tuple[int, ...] = config.K_VALUES,
 ) -> pd.DataFrame:
@@ -181,16 +181,22 @@ def compare_recommendations(
 
     Args:
         recommendations: Списки `book_id` по имени модели, строки выровнены
-            с `eval_set.user_ids`.
+            с `eval_set.user_ids`: один список длины ≥ max(ks), усекаемый до
+            каждого K, или отдельные списки по K (сбалансированная выдача).
         eval_set: Набор оценки.
         ks: Длины списков.
 
     Returns:
         DataFrame с индексом (model, k) и колонками метрик.
     """
+
+    def model_metrics(recs: np.ndarray | dict[int, np.ndarray]) -> pd.DataFrame:
+        if isinstance(recs, dict):
+            return pd.concat([ranking_metrics(recs[k], eval_set, (k,)) for k in ks])
+        return ranking_metrics(recs, eval_set, ks)
+
     return pd.concat(
-        {name: ranking_metrics(recs, eval_set, ks) for name, recs in recommendations.items()},
-        names=["model"],
+        {name: model_metrics(recs) for name, recs in recommendations.items()}, names=["model"]
     )
 
 
@@ -259,6 +265,25 @@ def user_metrics(recommendations: np.ndarray, eval_set: EvalSet, k: int) -> pd.D
     )
 
 
+def activity_segment(ratings: pd.DataFrame) -> pd.Series:
+    """Определяет сегмент активности каждого пользователя по числу оценок.
+
+    Границы сегментов задаются `config.USER_ACTIVITY_BINS`.
+
+    Args:
+        ratings: Оценки `user_id, book_id, rating`.
+
+    Returns:
+        Categorical Series с индексом `user_id` и метками `config.USER_ACTIVITY_LABELS`.
+    """
+    return pd.cut(
+        ratings.groupby("user_id").size(),
+        bins=list(config.USER_ACTIVITY_BINS),
+        labels=list(config.USER_ACTIVITY_LABELS),
+        right=False,
+    ).rename("segment")
+
+
 def segment_metrics(
     recommendations: dict[str, np.ndarray],
     eval_set: EvalSet,
@@ -295,30 +320,6 @@ def segment_metrics(
         table["n_relevant"] = grouped["n_relevant"].mean()
         tables[name] = table.rename_axis("segment")
     return pd.concat(tables, names=["model"])
-
-
-def exposure(
-    recommendations: dict[str, np.ndarray], item_segments: pd.Series, k: int = 10
-) -> pd.DataFrame:
-    """Считает долю позиций top-K, занятых книгами каждого сегмента популярности.
-
-    Args:
-        recommendations: Списки `book_id` по имени модели.
-        item_segments: Categorical-сегмент книги (head / mid / tail), индекс — `book_id`.
-        k: Длина списка.
-
-    Returns:
-        DataFrame: строки — модели, колонки — сегменты, значения — доли
-        заполненных позиций top-K.
-    """
-    lookup = item_segments.reindex(np.arange(1, config.N_BOOKS + 1))
-    rows = {}
-    for name, recs in recommendations.items():
-        top = recs[:, :k]
-        segment = lookup.to_numpy()[top[top > 0] - 1]
-        counts = pd.Series(segment).value_counts(normalize=True)
-        rows[name] = counts.reindex(item_segments.cat.categories, fill_value=0.0)
-    return pd.DataFrame(rows).T.rename_axis("model")
 
 
 def diversity_metrics(

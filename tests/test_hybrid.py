@@ -6,7 +6,7 @@ import pytest
 from scipy import sparse
 from test_candidates import FixedScores
 
-from recsys import config, hybrid
+from recsys import config, evaluation, hybrid
 from recsys.balancing import Quotas
 
 
@@ -103,3 +103,31 @@ def test_hybrid_quotas_and_score(toy: tuple[pd.DataFrame, pd.Series, dict]) -> N
     assert np.isfinite(base.score(np.array([1]))).sum() == 28
     with pytest.raises(ValueError):
         base.with_params(n_candidates=3)
+
+
+def test_search_weights_and_quotas(toy: tuple[pd.DataFrame, pd.Series, dict]) -> None:
+    train, categories, models = toy
+    model = hybrid.HybridRecommender(
+        models, categories, sources=("popularity", "item_cf"), weights=WEIGHTS, n_candidates=5
+    ).fit(train)
+    # Новому пользователю 2 релевантны книги 3 и 4 — первые в порядке Popularity
+    # (у Item-CF — книги 13–17); пользователю 1 (active) — книга 13.
+    holdout = pd.DataFrame({"user_id": [1, 2, 2], "book_id": [13, 3, 4], "rating": [5, 4, 5]})
+    eval_set = evaluation.build_eval_set(train, holdout, n_users=None)
+    scored = model.prepare(eval_set.user_ids)
+    table = hybrid.search_weights(
+        model, scored, eval_set, "new", ("popularity", "item_cf"), values=(0.0, 1.0), k=2
+    )
+    assert len(table) == 3
+    assert table.loc[0, ["popularity", "item_cf"]].tolist() == [1.0, 0.0]
+    assert table.loc[0, "ndcg"] == pytest.approx(1.0)
+    weights = hybrid.best_weights(model, table, "new")
+    assert weights == {"active": {"item_cf": 1.0}, "new": {"popularity": 1.0}}
+    assert hybrid.normalize_weights({"new": {"a": 1.0, "b": 3.0, "c": 0.0}}) == {
+        "new": {"a": 0.25, "b": 0.75}
+    }
+    variants = hybrid.quota_grid((1, 2), (0,))
+    quotas_table = hybrid.search_quotas(model, scored, eval_set, variants, k=2)
+    assert list(quotas_table.index) == ["без квот", "q=1", "q=2"]
+    selected = hybrid.select_quotas(quotas_table, variants, max_drop=1.0)
+    assert selected in variants

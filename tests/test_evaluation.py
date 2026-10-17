@@ -1,10 +1,10 @@
-"""Проверка оценки по готовым спискам: пользовательские метрики, сегменты, exposure."""
+"""Проверка оценки по готовым спискам: метрики пользователей, сегменты, разнообразие."""
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from recsys import config, evaluation
+from recsys import evaluation
 
 
 @pytest.fixture
@@ -59,19 +59,6 @@ def test_segment_metrics(eval_set: evaluation.EvalSet, recommendations: np.ndarr
     assert table.index.get_level_values("segment")[:2].tolist() == ["a", "b"]
 
 
-def test_exposure_shares() -> None:
-    labels = np.where(np.arange(1, config.N_BOOKS + 1) <= 2, "head", "tail")
-    item_segments = pd.Series(
-        pd.Categorical(labels, categories=["head", "mid", "tail"]),
-        index=np.arange(1, config.N_BOOKS + 1),
-    )
-    recs = np.array([[1, 2, 3], [1, 5, -1]])
-    table = evaluation.exposure({"m": recs}, item_segments, k=3)
-    assert table.loc["m", "head"] == pytest.approx(3 / 5)
-    assert table.loc["m", "mid"] == 0.0
-    assert table.loc["m", "tail"] == pytest.approx(2 / 5)
-
-
 def test_diversity_metrics() -> None:
     categories = np.array([0, 0, 1, 2])
     is_head = np.array([True, False, False, True])
@@ -81,3 +68,20 @@ def test_diversity_metrics() -> None:
     assert table.loc["m", "n_categories"] == pytest.approx(1.5)
     assert table.loc["m", "ild"] == pytest.approx((2 / 3 + 0.0) / 2)
     assert table.loc["m", "tail_share"] == pytest.approx((2 / 3 + 0.0) / 2)
+
+
+def test_compare_recommendations_per_k_lists(
+    eval_set: evaluation.EvalSet, recommendations: np.ndarray
+) -> None:
+    lists = {1: recommendations[:, :1], 2: recommendations}
+    table = evaluation.compare_recommendations(
+        {"single": recommendations, "per_k": lists}, eval_set, ks=(1, 2)
+    )
+    pd.testing.assert_frame_equal(table.loc["single"], table.loc["per_k"])
+
+
+def test_activity_segment() -> None:
+    ratings = pd.DataFrame({"user_id": [1] * 3 + [2] * 60, "book_id": range(63), "rating": 4})
+    segments = evaluation.activity_segment(ratings)
+    assert segments.loc[1] == "<50"
+    assert segments.loc[2] == "50–99"

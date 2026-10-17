@@ -2,8 +2,9 @@
 
 Cold start пользователя моделируется усечением истории: у выбранных пользователей
 в train остаются первые n оценок по времени, остальные удаляются, и модели
-обучаются на усечённых данных. Cold start книги — удаление всех оценок части
-каталога из train: такие книги неизвестны CF-моделям, но имеют метаданные.
+обучаются на усечённых данных; гибрид и отдельные модели сравниваются на той же
+отложенной части. Cold start книги — удаление всех оценок части каталога из
+train: такие книги неизвестны CF-моделям, но имеют метаданные.
 """
 
 import dataclasses
@@ -11,8 +12,10 @@ import dataclasses
 import numpy as np
 import pandas as pd
 
-from recsys import config, metrics
+from recsys import config, evaluation, metrics
 from recsys.evaluation import EvalSet
+from recsys.hybrid import HybridRecommender
+from recsys.models import ContentBased, FunkSVD, ItemCF, Popularity, PureSVD, Recommender
 
 
 def sample_users(
@@ -34,20 +37,125 @@ def sample_users(
     return np.sort(rng.choice(user_ids, size=min(n_users, len(user_ids)), replace=False))
 
 
-def truncate_history(train: pd.DataFrame, user_ids: np.ndarray, n: int) -> pd.DataFrame:
+def truncate_history(
+    train: pd.DataFrame, user_ids: np.ndarray, n: int | np.ndarray
+) -> pd.DataFrame:
     """Оставляет у выбранных пользователей только первые n оценок train.
 
     Args:
         train: Обучающие оценки в хронологическом порядке строк.
         user_ids: Пользователи с усекаемой историей.
-        n: Длина оставляемой истории.
+        n: Длина оставляемой истории: одна для всех или по пользователю
+            (массив, выровненный с `user_ids`).
 
     Returns:
         Оценки train с усечённой историей выбранных пользователей.
     """
     position = train.groupby("user_id", sort=False).cumcount().to_numpy()
-    keep = ~train["user_id"].isin(user_ids).to_numpy() | (position < n)
-    return train[keep]
+    limits = np.full(config.N_USERS + 1, np.iinfo(np.int64).max, dtype=np.int64)
+    limits[np.asarray(user_ids)] = n
+    return train[position < limits[train["user_id"].to_numpy()]]
+
+
+def mixed_lengths(
+    n_users: int,
+    lengths: tuple[int, ...] = config.COLD_HISTORY_LENGTHS,
+    random_state: int = config.RANDOM_STATE,
+) -> np.ndarray:
+    """Назначает пользователям длины истории поровну в случайном порядке.
+
+    Args:
+        n_users: Число пользователей.
+        lengths: Длины истории.
+        random_state: Seed перестановки.
+
+    Returns:
+        Длина истории каждого пользователя формы (n_users,).
+    """
+    return np.random.default_rng(random_state).permutation(np.resize(lengths, n_users))
+
+
+def fit_models(
+    train: pd.DataFrame,
+    books: pd.DataFrame,
+    book_tags: pd.DataFrame,
+    categories: pd.Series,
+    weights: dict[str, dict[str, float]] = config.HYBRID_WEIGHTS,
+) -> HybridRecommender:
+    """Обучает модели-компоненты с параметрами из `config` и гибрид на них.
+
+    Args:
+        train: Обучающие оценки.
+        books: Метаданные книг.
+        book_tags: Очищенные теги книг.
+        categories: Категории книг.
+        weights: Веса компонент гибрида по типу пользователя.
+
+    Returns:
+        Обученный гибрид; модели-компоненты — `models` гибрида.
+    """
+    models: dict[str, Recommender] = {
+        "popularity": Popularity("weighted", config.POPULARITY_WR_M),
+        "content": ContentBased(books, book_tags),
+        "item_cf": ItemCF(),
+        "pure_svd": PureSVD(config.PURE_SVD_N_FACTORS),
+        "funk_svd": FunkSVD(),
+    }
+    return HybridRecommender(models, categories, weights=weights).fit(train)
+
+
+def evaluate_histories(
+    train: pd.DataFrame,
+    eval_set: EvalSet,
+    user_ids: np.ndarray,
+    books: pd.DataFrame,
+    book_tags: pd.DataFrame,
+    categories: pd.Series,
+    variants: dict[str, dict[str, object]],
+    lengths: tuple[int, ...] = config.COLD_HISTORY_LENGTHS,
+    baselines: tuple[str, ...] = ("popularity", "content", "item_cf"),
+    k: int = 10,
+) -> pd.DataFrame:
+    """Оценивает гибрид и отдельные модели при усечённой до n оценок истории.
+
+    Для каждого n модели обучаются заново на train с усечённой историей
+    выбранных пользователей; цель оценки — релевантные книги отложенной части
+    тех же пользователей, из выдачи исключается вся исходная история train.
+
+    Args:
+        train: Полные обучающие оценки.
+        eval_set: Набор оценки, содержащий `user_ids`.
+        user_ids: Пользователи с усекаемой историей.
+        books: Метаданные книг.
+        book_tags: Очищенные теги книг.
+        categories: Категории книг.
+        variants: Варианты гибрида: отображаемое название → параметры
+            `HybridRecommender.with_params` (`weights`, `quotas`).
+        lengths: Длины истории.
+        baselines: Отдельные модели сравнения (ключи `HybridRecommender.models`).
+        k: Длина списка.
+
+    Returns:
+        DataFrame метрик при K с индексом (model, history).
+    """
+    base = evaluation.subset(eval_set, user_ids)
+    tables = {}
+    for n in lengths:
+        truncated = truncate_history(train, base.user_ids, n)
+        hybrid = fit_models(truncated, books, book_tags, categories)
+        target = with_train(base, truncated)
+        recommendations = {
+            config.MODEL_LABELS[name]: hybrid.models[name].recommend(
+                base.user_ids, k, exclude=target.seen
+            )
+            for name in baselines
+        }
+        scored = hybrid.prepare(base.user_ids, exclude=target.seen)
+        for label, params in variants.items():
+            variant = hybrid.with_params(**params)
+            recommendations[label] = variant.rank(scored, k, exclude=target.seen)
+        tables[n] = evaluation.compare_recommendations(recommendations, target, ks=(k,))
+    return pd.concat(tables, names=["history"]).droplevel("k").swaplevel()
 
 
 def hide_items(

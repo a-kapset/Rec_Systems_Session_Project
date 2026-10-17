@@ -54,20 +54,16 @@ SVD_REG_ALL: float = 0.05
 SVD_MIN_ITEM_RATINGS: int = 1
 PURE_SVD_N_FACTORS: int = 200
 
-# Симуляция cold start: число пользователей с усечённой историей, длины истории,
-# доля каталога, скрываемая как новые книги.
+# Симуляция cold start: число пользователей с усечённой историей, длины истории
+# (не больше USER_NEW_MAX_RATINGS — пользователи становятся новыми), доля каталога,
+# скрываемая как новые книги.
 COLD_N_USERS: int = 5_000
-COLD_HISTORY_LENGTHS: tuple[int, ...] = (1, 3, 5, 10, 20)
+COLD_HISTORY_LENGTHS: tuple[int, ...] = (1, 3, 5, 10)
 COLD_ITEM_SHARE: float = 0.05
 
 # Сегменты пользователей по числу оценок: границы [left, right).
 USER_ACTIVITY_BINS: tuple[int, ...] = (0, 50, 100, 150, 10_000)
 USER_ACTIVITY_LABELS: tuple[str, ...] = ("<50", "50–99", "100–149", "≥150")
-
-# Сегменты книг по популярности: head — книги, дающие первые 50 % оценок,
-# tail — книги за пределами первых 80 % оценок, mid — остальные.
-HEAD_RATING_SHARE: float = 0.5
-TAIL_RATING_SHARE: float = 0.8
 
 # Признаки. Тип пользователя «новый» — не более USER_NEW_MAX_RATINGS оценок в train;
 # сила сглаживания средней оценки книги к глобальному среднему (Bayesian average);
@@ -80,12 +76,14 @@ CATEGORY_AFFINITY_ALPHA: float = 10.0
 CANDIDATE_SOURCES: tuple[str, ...] = ("popularity", "content", "item_cf", "pure_svd")
 CANDIDATES_PER_SOURCE: int = 50
 
-# Компоненты взвешенного гибрида и стартовые веса по типам пользователей
-# (уточняются подбором на valid). У новых пользователей больше вес Popularity.
+# Компоненты взвешенного гибрида и веса по типам пользователей, подобранные на valid
+# (`hybrid.search_weights`): сетка WEIGHT_GRID_VALUES по основным компонентам типа,
+# остальные — фиксированные стартовые значения. Ранжирование не зависит от
+# нормировки весов, поэтому веса хранятся в шкале сетки.
 HYBRID_COMPONENTS: tuple[str, ...] = (
     "popularity", "content", "item_cf", "pure_svd", "funk_svd", "affinity",
 )  # fmt: skip
-HYBRID_WEIGHTS: dict[str, dict[str, float]] = {
+HYBRID_START_WEIGHTS: dict[str, dict[str, float]] = {
     "active": {
         "popularity": 0.05, "content": 0.15, "item_cf": 0.4,
         "pure_svd": 0.2, "funk_svd": 0.1, "affinity": 0.1,
@@ -95,12 +93,44 @@ HYBRID_WEIGHTS: dict[str, dict[str, float]] = {
         "pure_svd": 0.05, "funk_svd": 0.05, "affinity": 0.15,
     },
 }  # fmt: skip
+HYBRID_WEIGHTS: dict[str, dict[str, float]] = {
+    "active": {
+        "popularity": 0.05, "item_cf": 1.0, "pure_svd": 0.25, "funk_svd": 0.1, "affinity": 0.1,
+    },
+    "new": {
+        "popularity": 1.0, "item_cf": 0.5, "pure_svd": 0.05, "funk_svd": 0.05, "affinity": 0.15,
+    },
+}  # fmt: skip
 
 # Балансировка top-K: head — доля самых популярных книг каталога по числу оценок
-# в train; квоты — не более q книг одной категории и не менее t книг вне head.
+# в train; квоты — не более q книг одной категории и не менее t книг вне head
+# в списке длины BALANCE_BASE_K (для других K — пропорционально).
 BALANCE_HEAD_SHARE: float = 0.1
-BALANCE_MAX_PER_CATEGORY: int = 3
+BALANCE_BASE_K: int = 10
+BALANCE_MAX_PER_CATEGORY: int = 4
 BALANCE_MIN_TAIL: int = 3
+
+# Подбор на valid. Веса: сетка значений для трёх основных компонент каждого типа
+# пользователя, остальные компоненты сохраняют стартовые веса; критерий — nDCG@10.
+# Квоты: варианты q и t; выбирается вариант с наибольшим ILD (затем — долей вне
+# head) среди снижающих nDCG@10 не более чем на BALANCE_MAX_NDCG_DROP.
+WEIGHT_GRID_VALUES: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
+WEIGHT_GRID_COMPONENTS: dict[str, tuple[str, ...]] = {
+    "active": ("item_cf", "pure_svd", "content"),
+    "new": ("popularity", "content", "item_cf"),
+}
+QUOTA_GRID_MAX_PER_CATEGORY: tuple[int, ...] = (3, 4, 5)
+QUOTA_GRID_MIN_TAIL: tuple[int, ...] = (0, 3)
+BALANCE_MAX_NDCG_DROP: float = 0.05
+
+# Отображаемые названия моделей-компонент в таблицах и на графиках.
+MODEL_LABELS: dict[str, str] = {
+    "popularity": "Popularity (weighted)",
+    "content": "Content-Based",
+    "item_cf": "Item-based CF",
+    "pure_svd": "PureSVD",
+    "funk_svd": "FunkSVD",
+}
 
 # Тематические категории книг: шаблоны ключевых слов по очищенным тегам. Тег
 # относится ко всем категориям, шаблоны которых он содержит; категория книги —

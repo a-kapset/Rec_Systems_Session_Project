@@ -6,10 +6,12 @@
 Content-Based, Item-based CF, PureSVD, FunkSVD) и affinity пользователя к
 категории книги. Top-K выбирается по скору пула, при заданных квотах — с
 переранжированием (`recsys.balancing`); при нехватке кандидатов список
-дополняется книгами Popularity.
+дополняется книгами Popularity. Веса и квоты подбираются на готовом пуле
+(`search_weights`, `search_quotas`) без повторного скоринга моделей.
 """
 
 import copy
+import itertools
 import time
 from dataclasses import dataclass
 from typing import Self
@@ -18,7 +20,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
-from recsys import balancing, candidates, config, features
+from recsys import balancing, candidates, config, evaluation, features
 from recsys.balancing import Quotas
 from recsys.candidates import CandidatePool
 from recsys.data import interaction_matrix
@@ -346,8 +348,9 @@ class HybridRecommender(Recommender):
     ) -> np.ndarray:
         """Формирует top-K по готовому пулу с текущими весами и квотами.
 
-        Квоты соблюдаются для списка длины K, поэтому при балансировке список
-        строится отдельно для каждой оцениваемой длины.
+        Квоты пересчитываются на длину K (`Quotas.for_length`) и соблюдаются для
+        всего списка, поэтому при балансировке список строится отдельно для
+        каждой оцениваемой длины (`rank_lists`).
 
         Args:
             scored: Пул со скорами компонент (`prepare`).
@@ -362,10 +365,35 @@ class HybridRecommender(Recommender):
             top = np.full((ranked.shape[0], k), -1, dtype=np.int64)
             top[:, : min(k, ranked.shape[1])] = ranked[:, :k]
         else:
-            top = balancing.rerank(ranked, k, self._category_codes, self.is_head, self.quotas)
+            quotas = self.quotas.for_length(k)
+            top = balancing.rerank(ranked, k, self._category_codes, self.is_head, quotas)
         return fill_fallback(
             top, scored.pool.user_ids, self.fallback_order, self._exclusion(exclude)
         )
+
+    def rank_lists(
+        self,
+        scored: ScoredPool,
+        ks: tuple[int, ...] = config.K_VALUES,
+        exclude: sparse.csr_matrix | None = None,
+    ) -> dict[int, np.ndarray]:
+        """Формирует списки всех оцениваемых длин по готовому пулу.
+
+        Без квот список длины max(ks) усекается; с квотами каждый список
+        строится отдельно.
+
+        Args:
+            scored: Пул со скорами компонент (`prepare`).
+            ks: Длины списков.
+            exclude: Те же дополнительно исключаемые книги, что в `prepare`.
+
+        Returns:
+            Списки `book_id` формы (n_users, K) по длине K.
+        """
+        if self.quotas is None:
+            top = self.rank(scored, max(ks), exclude)
+            return {k: top[:, :k] for k in ks}
+        return {k: self.rank(scored, k, exclude) for k in ks}
 
     def recommend(
         self,
@@ -444,3 +472,173 @@ class HybridRecommender(Recommender):
         )
         score = np.where(in_pool, combine(scored, self.weights)[index], np.nan)
         return pd.concat([table, components], axis=1).assign(score=score)
+
+
+def normalize_weights(weights: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+    """Нормирует веса каждого типа пользователя к сумме 1 и убирает нулевые.
+
+    Порядок гибридного скора не меняется: скор умножается на положительную константу.
+
+    Args:
+        weights: Веса компонент по типу пользователя.
+
+    Returns:
+        Нормированные веса.
+    """
+    result = {}
+    for user_type, type_weights in weights.items():
+        total = sum(type_weights.values())
+        result[user_type] = {
+            name: weight / total for name, weight in type_weights.items() if weight > 0
+        }
+    return result
+
+
+def search_weights(
+    model: HybridRecommender,
+    scored: ScoredPool,
+    eval_set: evaluation.EvalSet,
+    user_type: str,
+    components: tuple[str, ...],
+    values: tuple[float, ...] = config.WEIGHT_GRID_VALUES,
+    k: int = 10,
+    exclude: sparse.csr_matrix | None = None,
+) -> pd.DataFrame:
+    """Перебирает сетку весов основных компонент одного типа пользователя на готовом пуле.
+
+    Веса остальных компонент и другого типа пользователя берутся из `model.weights`;
+    метрики считаются только по пользователям типа `user_type`.
+
+    Args:
+        model: Обученный гибрид.
+        scored: Пул со скорами компонент, пользователи совпадают с `eval_set.user_ids`.
+        eval_set: Набор оценки (valid).
+        user_type: Тип пользователя (`new` или `active`).
+        components: Компоненты, веса которых перебираются.
+        values: Значения веса каждой компоненты; сочетание из одних нулей пропускается.
+        k: Длина списка.
+        exclude: Дополнительно исключаемые книги, как в `prepare`.
+
+    Returns:
+        DataFrame по сочетаниям весов (колонки компонент) с `ndcg`, `recall`,
+        `hit_rate`, `coverage` при K, по убыванию nDCG@K.
+
+    Raises:
+        ValueError: Если пользователи пула и набора оценки не совпадают или
+            пользователей типа `user_type` нет.
+    """
+    if not np.array_equal(scored.pool.user_ids, eval_set.user_ids):
+        raise ValueError("пользователи пула должны совпадать с набором оценки")
+    rows = np.flatnonzero(scored.user_types == USER_TYPES.index(user_type))
+    if rows.size == 0:
+        raise ValueError(f"нет пользователей типа {user_type}")
+    target = evaluation.subset(eval_set, eval_set.user_ids[rows])
+    records = []
+    for combo in itertools.product(values, repeat=len(components)):
+        if not any(combo):
+            continue
+        grid_weights = dict(zip(components, combo, strict=True))
+        weights = copy.deepcopy(model.weights)
+        weights[user_type] = {**weights.get(user_type, {}), **grid_weights}
+        top = model.with_params(weights=weights, quotas=None).rank(scored, k, exclude)
+        quality = evaluation.ranking_metrics(top[rows], target, (k,)).loc[k]
+        records.append({**grid_weights, **quality[["ndcg", "recall", "hit_rate", "coverage"]]})
+    table = pd.DataFrame(records).sort_values("ndcg", ascending=False, kind="stable")
+    return table.reset_index(drop=True)
+
+
+def best_weights(
+    model: HybridRecommender, table: pd.DataFrame, user_type: str
+) -> dict[str, dict[str, float]]:
+    """Подставляет лучшие по nDCG веса из таблицы `search_weights` в веса гибрида.
+
+    Args:
+        model: Гибрид, веса которого дополняются.
+        table: Результат `search_weights` (первая строка — лучшая).
+        user_type: Тип пользователя, для которого выполнялся перебор.
+
+    Returns:
+        Веса всех типов пользователей без нулевых компонент (в шкале сетки, без нормировки).
+    """
+    components = [column for column in table.columns if column in model.components]
+    weights = copy.deepcopy(model.weights)
+    weights[user_type] = {**weights.get(user_type, {}), **table.loc[0, components].to_dict()}
+    return {
+        name: {component: w for component, w in type_weights.items() if w > 0}
+        for name, type_weights in weights.items()
+    }
+
+
+def quota_grid(
+    max_per_category: tuple[int, ...] = config.QUOTA_GRID_MAX_PER_CATEGORY,
+    min_tail: tuple[int, ...] = config.QUOTA_GRID_MIN_TAIL,
+) -> list[Quotas]:
+    """Формирует варианты квот — все сочетания q и t.
+
+    Args:
+        max_per_category: Значения q.
+        min_tail: Значения t.
+
+    Returns:
+        Список квот.
+    """
+    return [Quotas(q, t) for q, t in itertools.product(max_per_category, min_tail)]
+
+
+def search_quotas(
+    model: HybridRecommender,
+    scored: ScoredPool,
+    eval_set: evaluation.EvalSet,
+    variants: list[Quotas],
+    k: int = 10,
+) -> pd.DataFrame:
+    """Оценивает варианты квот балансировки на готовом пуле.
+
+    Args:
+        model: Обученный гибрид с итоговыми весами.
+        scored: Пул со скорами компонент, пользователи совпадают с `eval_set.user_ids`.
+        eval_set: Набор оценки (valid).
+        variants: Варианты квот; первой строкой добавляется выдача без квот.
+        k: Длина списка.
+
+    Returns:
+        DataFrame с индексом — подписью квот (`Quotas.label`): `ndcg`, `recall`,
+        `hit_rate`, `coverage` при K и метрики разнообразия
+        (`evaluation.diversity_metrics`).
+    """
+    recommendations = {"без квот": model.with_params(quotas=None).rank(scored, k)}
+    for quotas in variants:
+        recommendations[quotas.label] = model.with_params(quotas=quotas).rank(scored, k)
+    quality = evaluation.compare_recommendations(recommendations, eval_set, (k,)).xs(k, level="k")
+    diversity = evaluation.diversity_metrics(
+        recommendations, model.categories.cat.codes.to_numpy(), model.is_head, k
+    )
+    table = quality[["ndcg", "recall", "hit_rate", "coverage"]].join(diversity)
+    return table.rename_axis("quotas")
+
+
+def select_quotas(
+    table: pd.DataFrame,
+    variants: list[Quotas],
+    max_drop: float = config.BALANCE_MAX_NDCG_DROP,
+) -> Quotas | None:
+    """Выбирает квоты с наибольшим ILD среди допустимых по снижению nDCG.
+
+    Допустимы варианты, у которых nDCG@K не ниже (1 − max_drop) от выдачи без
+    квот; при равном ILD выбирается вариант с большей долей книг вне head.
+
+    Args:
+        table: Результат `search_quotas`.
+        variants: Те же варианты квот, что в `search_quotas`.
+        max_drop: Допустимое относительное снижение nDCG@K.
+
+    Returns:
+        Выбранные квоты; None — ни один вариант не допустим.
+    """
+    by_label = {quotas.label: quotas for quotas in variants}
+    options = table.loc[list(by_label)]
+    admissible = options[options["ndcg"] >= (1 - max_drop) * table.loc["без квот", "ndcg"]]
+    if admissible.empty:
+        return None
+    best = admissible.sort_values(["ild", "tail_share"], ascending=False, kind="stable").index[0]
+    return by_label[best]

@@ -19,8 +19,10 @@ from recsys import config
 class Quotas:
     """Квоты балансировки top-K.
 
-    Квоты относятся ко всему списку длины K: для оценки на нескольких K
-    сбалансированный список строится отдельно для каждого K, а не усекается.
+    Квоты задаются для списка длины `config.BALANCE_BASE_K` и пересчитываются
+    пропорционально на другие длины (`for_length`). Квоты относятся ко всему
+    списку: для оценки на нескольких K сбалансированный список строится отдельно
+    для каждого K, а не усекается.
 
     Attributes:
         max_per_category: q — максимум книг одной категории; None — без ограничения.
@@ -39,6 +41,25 @@ class Quotas:
         if self.min_tail > 0:
             parts.append(f"t={self.min_tail}")
         return ", ".join(parts) or "без квот"
+
+    def for_length(self, k: int, base_k: int = config.BALANCE_BASE_K) -> "Quotas":
+        """Пересчитывает квоты, заданные для списка длины `base_k`, на длину K.
+
+        q масштабируется с округлением вверх, t — с округлением к ближайшему,
+        чтобы доли категорий и long tail в списке не зависели от K.
+
+        Args:
+            k: Длина списка.
+            base_k: Длина списка, для которой заданы квоты.
+
+        Returns:
+            Квоты для списка длины K.
+        """
+        q = self.max_per_category
+        return Quotas(
+            max_per_category=None if q is None else -(-q * k // base_k),
+            min_tail=round(self.min_tail * k / base_k),
+        )
 
 
 def head_mask(item_counts: np.ndarray, share: float = config.BALANCE_HEAD_SHARE) -> np.ndarray:

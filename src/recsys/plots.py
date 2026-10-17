@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
 from matplotlib.ticker import MultipleLocator, PercentFormatter
+from matplotlib.transforms import Bbox
 
 from recsys import config
 
@@ -22,18 +23,25 @@ TEXT_PRIMARY = "#0b0b0b"
 TEXT_SECONDARY = "#52514e"
 GRID = "#e4e3df"
 SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300")
+NEUTRAL = "#a3a29d"
 # Закреплённые цвета моделей: цвет следует за моделью на всех графиках сравнения.
+# Набор моделей одного графика проверен на различимость при нарушениях цветового
+# зрения; варианты гибрида имеют общий цвет и различаются типом линии.
+HYBRID_PREFIX = "Гибрид"
+HYBRID_COLOR = "#4a3aa7"
 MODEL_COLORS: dict[str, str] = {
-    "Popularity (mean)": SERIES[0],
-    "Popularity (weighted)": SERIES[1],
+    "Popularity (weighted)": SERIES[0],
     "Content-Based": SERIES[2],
     "Item-based CF": SERIES[3],
-    "FunkSVD": SERIES[4],
     "PureSVD": SERIES[5],
-    "Hybrid": "#4a3aa7",
 }
-# Последовательная шкала одного оттенка: head (тёмный) → tail (светлый).
-POPULARITY_RAMP = ("#104281", "#2a78d6", "#86b6ef")
+# Более длинные названия проверяются первыми.
+HYBRID_LINESTYLES: dict[str, str] = {
+    "Гибрид + балансировка + long tail": "-.",
+    "Гибрид + балансировка": "--",
+    "Гибрид без affinity": ":",
+    HYBRID_PREFIX: "-",
+}
 
 
 def set_style() -> None:
@@ -91,6 +99,11 @@ METRIC_LABELS: dict[str, str] = {
     "map": "MAP",
     "hit_rate": "HitRate",
     "coverage": "Coverage",
+    "ild": "ILD",
+}
+DIVERSITY_LABELS: dict[str, str] = {
+    "coverage": "Coverage@10 — доля каталога в рекомендациях",
+    "ild": "ILD@10 — разнообразие категорий в списке",
 }
 
 
@@ -129,109 +142,114 @@ def plot_category_shares(table: pd.DataFrame) -> Figure:
     return fig
 
 
-def plot_model_comparison(
-    table: pd.DataFrame, columns: tuple[str, ...] = ("precision", "recall", "ndcg", "map")
-) -> Figure:
-    """Строит сгруппированную столбчатую диаграмму метрик моделей при фиксированном K.
+def _style(model: str) -> dict[str, object]:
+    """Возвращает цвет и тип линии модели: варианты гибрида различаются типом линии."""
+    for prefix, linestyle in HYBRID_LINESTYLES.items():
+        if model.startswith(prefix):
+            return {"color": HYBRID_COLOR, "linestyle": linestyle}
+    return {"color": MODEL_COLORS.get(model, NEUTRAL), "linestyle": "-"}
 
-    Левая панель — метрики точности `columns`, правая — HitRate; цвет
-    столбца — модель, порядок моделей — порядок строк `table`.
+
+def _place_labels(ax: plt.Axes, xs: np.ndarray, ys: np.ndarray, labels: list[str]) -> None:
+    """Подписывает точки, выбирая для каждой подписи первое положение без наложений.
+
+    Положения перебираются по порядку (справа сверху, справа снизу, слева сверху,
+    слева снизу, справа ниже); наложение проверяется по фактическим размерам
+    текста и маркеров на холсте.
 
     Args:
-        table: Метрики при одном K, индекс — названия моделей.
-        columns: Метрики левой панели.
-
-    Returns:
-        График.
+        ax: Оси с уже заданными пределами.
+        xs: Координаты точек по x.
+        ys: Координаты точек по y.
+        labels: Подписи точек.
     """
-    fig, (ax_metrics, ax_hit) = plt.subplots(
-        1, 2, figsize=(13, 4.6), gridspec_kw={"width_ratios": [3, 1.2]}
+    renderer = ax.figure.canvas.get_renderer()
+    offsets = (
+        (7, 4, "left"),
+        (7, -13, "left"),
+        (-7, 4, "right"),
+        (-7, -13, "right"),
+        (7, -24, "left"),
     )
-    n_models = len(table)
-    width = 0.8 / n_models
-    x = np.arange(len(columns))
-    for i, (model, color) in enumerate(zip(table.index, SERIES, strict=False)):
-        offset = (i - (n_models - 1) / 2) * width
-        values = table.loc[model, list(columns)].to_numpy(dtype=float)
-        ax_metrics.bar(x + offset, values, width * 0.9, color=color, label=model)
-    ax_metrics.set_xticks(x, [f"{METRIC_LABELS[c]}@10" for c in columns])
-    ax_metrics.set_ylabel("Значение на test")
-    ax_metrics.set_title("Метрики точности top-10")
-    ax_metrics.legend(ncols=3, loc="upper center", bbox_to_anchor=(0.5, -0.1))
-
-    colors = SERIES[:n_models]
-    bars = ax_hit.barh(table.index[::-1], table["hit_rate"].to_numpy()[::-1], color=colors[::-1])
-    ax_hit.bar_label(bars, fmt="%.3f", padding=3, color=TEXT_SECONDARY, fontsize=9)
-    ax_hit.xaxis.set_major_formatter(PercentFormatter(1.0))
-    ax_hit.set_xlim(0, table["hit_rate"].max() * 1.25)
-    ax_hit.grid(axis="y", visible=False)
-    ax_hit.set_xlabel("Доля пользователей с попаданием")
-    ax_hit.set_title("HitRate@10")
-    fig.tight_layout()
-    return fig
+    centers = ax.transData.transform(np.column_stack([xs, ys]))
+    occupied = [Bbox.from_bounds(cx - 6, cy - 6, 12, 12) for cx, cy in centers]
+    for x, y, label in zip(xs, ys, labels, strict=True):
+        for dx, dy, align in offsets:
+            text = ax.annotate(
+                label, (x, y), xytext=(dx, dy), textcoords="offset points", ha=align,
+                color=TEXT_PRIMARY, fontsize=8,
+            )  # fmt: skip
+            box = text.get_window_extent(renderer)
+            if not any(box.overlaps(other) for other in occupied):
+                break
+            if (dx, dy) != offsets[-1][:2]:
+                text.remove()
+        occupied.append(box)
 
 
-def plot_metrics_by_k(
-    table: pd.DataFrame, columns: tuple[str, ...] = ("ndcg", "recall", "precision")
+def _is_hybrid(model: str) -> bool:
+    """Проверяет, относится ли название к варианту гибрида."""
+    return model.startswith(HYBRID_PREFIX)
+
+
+def plot_test_comparison(
+    table: pd.DataFrame, columns: tuple[str, ...] = ("ndcg", "recall", "hit_rate", "coverage")
 ) -> Figure:
-    """Строит зависимость метрик моделей от длины списка K.
+    """Строит метрики моделей при K = 10 малыми панелями горизонтальных столбцов.
+
+    Модель обозначена подписью оси, поэтому цвет только выделяет варианты
+    гибрида; значения подписаны у столбцов.
 
     Args:
-        table: Метрики с индексом (model, k).
+        table: Метрики при K = 10, индекс — названия моделей в порядке сверху вниз.
         columns: Метрики, по одной панели на метрику.
 
     Returns:
         График.
     """
-    fig, axes = plt.subplots(1, len(columns), figsize=(4.3 * len(columns), 4.2), sharex=True)
-    models = table.index.get_level_values("model").unique()
+    data = table[::-1]
+    colors = [HYBRID_COLOR if _is_hybrid(model) else NEUTRAL for model in data.index]
+    fig, axes = plt.subplots(
+        1, len(columns), figsize=(3.4 * len(columns) + 1.6, 0.42 * len(data) + 1.4), sharey=True
+    )
     for ax, column in zip(axes, columns, strict=True):
-        for model, color in zip(models, SERIES, strict=False):
-            part = table.loc[model, column]
-            ax.plot(part.index, part.to_numpy(), marker="o", color=color, label=model)
-        ax.set_xticks(sorted(table.index.get_level_values("k").unique()))
-        ax.set_xlabel("Длина списка K")
-        ax.set_ylabel(f"{METRIC_LABELS[column]}@K на test")
-        ax.set_title(f"{METRIC_LABELS[column]}@K")
-    axes[0].legend(fontsize=8)
+        values = data[column].to_numpy(dtype=float)
+        bars = ax.barh(data.index, values, 0.7, color=colors)
+        fmt = "%.4f" if values.max() < 0.2 else "%.3f"
+        ax.bar_label(bars, fmt=fmt, padding=3, color=TEXT_SECONDARY, fontsize=8)
+        ax.set_xlim(0, values.max() * 1.3)
+        ax.grid(axis="y", visible=False)
+        ax.set_title(f"{METRIC_LABELS[column]}@10")
+        ax.tick_params(axis="x", labelsize=8)
     fig.tight_layout()
     return fig
 
 
-def plot_coverage_vs_ndcg(table: pd.DataFrame) -> Figure:
-    """Строит диаграмму рассеяния Coverage@10 и nDCG@10 моделей.
+def plot_tradeoff(table: pd.DataFrame, x_columns: tuple[str, ...] = ("coverage", "ild")) -> Figure:
+    """Строит диаграммы рассеяния nDCG@10 против метрик разнообразия.
 
     Args:
-        table: Метрики при K = 10, индекс — названия моделей.
+        table: Метрики при K = 10 (`ndcg` и `x_columns`), индекс — названия моделей.
+        x_columns: Метрики разнообразия, по одной панели на метрику.
 
     Returns:
         График.
     """
-    fig, ax = plt.subplots(figsize=(7.5, 4.8))
-    placed: list[tuple[float, float]] = []
-    x_scale, y_scale = table["coverage"].max(), table["ndcg"].max()
-    for (model, row), color in zip(table.iterrows(), SERIES, strict=False):
-        x, y = row["coverage"], row["ndcg"]
-        ax.scatter(x, y, s=90, color=color, edgecolor=SURFACE, linewidth=2)
-        # Подпись близкой к уже подписанной точки смещается вниз.
-        crowded = any(
-            abs(x - px) < 0.05 * x_scale and abs(y - py) < 0.05 * y_scale for px, py in placed
-        )
-        ax.annotate(
-            model,
-            (x, y),
-            xytext=(8, -14 if crowded else 4),
-            textcoords="offset points",
-            color=TEXT_PRIMARY,
-            fontsize=9,
-        )
-        placed.append((x, y))
-    ax.xaxis.set_major_formatter(PercentFormatter(1.0))
-    ax.set_xlim(-0.02, table["coverage"].max() * 1.35)
-    ax.set_ylim(0, table["ndcg"].max() * 1.2)
-    ax.set_xlabel("Coverage@10 — доля каталога в рекомендациях")
-    ax.set_ylabel("nDCG@10 на test")
-    ax.set_title("Точность и разнообразие каталога")
+    fig, axes = plt.subplots(1, len(x_columns), figsize=(6.2 * len(x_columns), 4.6), sharey=True)
+    for ax, column in zip(axes, x_columns, strict=True):
+        x_scale, y_scale = table[column].max(), table["ndcg"].max()
+        ax.set_xlim(0, x_scale * 1.45)
+        ax.set_ylim(table["ndcg"].min() * 0.85, y_scale * 1.08)
+        for model, row in table.iterrows():
+            color = HYBRID_COLOR if _is_hybrid(model) else NEUTRAL
+            ax.scatter(
+                row[column], row["ndcg"], s=80, color=color, edgecolor=SURFACE, linewidth=2,
+                zorder=3,
+            )  # fmt: skip
+        _place_labels(ax, table[column].to_numpy(), table["ndcg"].to_numpy(), list(table.index))
+        ax.set_xlabel(DIVERSITY_LABELS[column])
+        ax.set_title(f"nDCG@10 и {METRIC_LABELS[column]}@10")
+    axes[0].set_ylabel("nDCG@10 на test")
     fig.tight_layout()
     return fig
 
@@ -255,16 +273,16 @@ def plot_segment_metrics(
     segments = table.loc[models[0]]
     ticks = [f"{s}\n({n:,} польз.)".replace(",", " ") for s, n in segments["n_users"].items()]
     for ax, column in zip(axes, columns, strict=True):
-        for model, color in zip(models, SERIES, strict=False):
+        for model in models:
             part = table.loc[model]
             ax.errorbar(
                 np.arange(len(part)),
                 part[column].to_numpy(),
                 yerr=part[f"{column}_ci"].to_numpy(),
                 marker="o",
-                color=color,
                 capsize=3,
                 label=model,
+                **_style(model),
             )
         ax.set_xticks(np.arange(len(segments)), ticks)
         ax.set_xlabel("Число оценок пользователя")
@@ -272,46 +290,6 @@ def plot_segment_metrics(
         ax.set_title(f"{METRIC_LABELS[column]}@10 по сегментам активности")
     axes[-1].yaxis.set_major_formatter(PercentFormatter(1.0))
     axes[0].legend(fontsize=8, ncols=2)
-    fig.tight_layout()
-    return fig
-
-
-def plot_exposure(table: pd.DataFrame, reference: pd.DataFrame) -> Figure:
-    """Строит доли позиций top-10 по сегментам популярности книг.
-
-    Верхние строки — доли сегментов в каталоге и в оценках train для сравнения.
-
-    Args:
-        table: Результат `evaluation.exposure`, колонки head / mid / tail.
-        reference: Опорные распределения с теми же колонками.
-
-    Returns:
-        График.
-    """
-    data = pd.concat([table, reference])[::-1]
-    fig, ax = plt.subplots(figsize=(9, 0.5 * len(data) + 1.6))
-    left = np.zeros(len(data))
-    for segment, color in zip(data.columns, POPULARITY_RAMP, strict=True):
-        values = data[segment].to_numpy(dtype=float)
-        ax.barh(
-            data.index, values, left=left, color=color, edgecolor=SURFACE, linewidth=2,
-            label=segment,
-        )  # fmt: skip
-        for y, (x0, value) in enumerate(zip(left, values, strict=True)):
-            if value >= 0.06:
-                text_color = SURFACE if color != POPULARITY_RAMP[-1] else TEXT_PRIMARY
-                ax.text(
-                    x0 + value / 2, y, f"{value:.0%}", ha="center", va="center",
-                    color=text_color, fontsize=9,
-                )  # fmt: skip
-        left += values
-    ax.axhline(len(reference) - 0.5, color=TEXT_SECONDARY, linewidth=1)
-    ax.xaxis.set_major_formatter(PercentFormatter(1.0))
-    ax.set_xlim(0, 1)
-    ax.grid(axis="y", visible=False)
-    ax.set_xlabel("Доля позиций top-10 (для опорных строк — доля книг или оценок)")
-    ax.set_title("Exposure: head / mid / long tail")
-    ax.legend(ncols=3, loc="upper center", bbox_to_anchor=(0.5, -0.14))
     fig.tight_layout()
     return fig
 
@@ -334,9 +312,7 @@ def plot_cold_start(table: pd.DataFrame, columns: tuple[str, ...] = ("ndcg", "hi
     for ax, column in zip(axes, columns, strict=True):
         for model in models:
             part = table.loc[model].reindex(histories)
-            ax.plot(
-                x, part[column].to_numpy(), marker="o", color=MODEL_COLORS.get(model), label=model
-            )
+            ax.plot(x, part[column].to_numpy(), marker="o", label=model, **_style(model))
         ax.set_xticks(x, [str(h) for h in histories])
         ax.set_xlabel("Число оценок пользователя в train")
         ax.set_ylabel(f"{METRIC_LABELS[column]}@10 на test")

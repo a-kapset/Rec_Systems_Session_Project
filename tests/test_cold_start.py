@@ -34,3 +34,13 @@ def test_new_item_metrics() -> None:
     assert result["exposure"] == pytest.approx(2 / 5)
     assert result["recall_new"] == pytest.approx(0.5)
     assert result["hit_rate_new"] == pytest.approx(0.5)
+
+
+def test_truncate_history_per_user_and_mixed_lengths() -> None:
+    train = pd.DataFrame(
+        {"user_id": [1, 2, 1, 2, 1, 3], "book_id": [1, 2, 3, 4, 5, 6], "rating": 4}
+    )
+    truncated = cold_start.truncate_history(train, np.array([1, 2]), np.array([2, 1]))
+    assert truncated["book_id"].tolist() == [1, 2, 3, 6]
+    lengths = cold_start.mixed_lengths(10, (1, 3))
+    assert sorted(lengths.tolist()) == [1] * 5 + [3] * 5

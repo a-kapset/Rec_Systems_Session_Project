@@ -53,3 +53,10 @@ def test_selected_books_keep_score_order() -> None:
 def test_quota_label() -> None:
     assert Quotas(3, 2).label == "q=3, t=2"
     assert Quotas(None).label == "без квот"
+
+
+def test_quotas_for_length() -> None:
+    assert Quotas(3, 3).for_length(10) == Quotas(3, 3)
+    assert Quotas(3, 3).for_length(20) == Quotas(6, 6)
+    assert Quotas(3, 3).for_length(5) == Quotas(2, 2)
+    assert Quotas(None, 0).for_length(5) == Quotas(None, 0)
